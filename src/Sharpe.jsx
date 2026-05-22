@@ -1,6 +1,11 @@
 import { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
+
 function calcSharpeScore(returnPct, winRate, tradeCount) {
   const r = Math.min(Math.max(returnPct, -100), 300);
   const w = Math.min(Math.max(winRate, 0), 100);
@@ -18,19 +23,12 @@ function getBadge(score) {
   return { label: "LEARNING", color: "#666680", bg: "rgba(102,102,128,0.08)" };
 }
 
-const DEMO_TRADERS = [
-  { id: "t1", handle: "@tape_reader", trades: [{ ticker: "NVDA", pct: 14.2 }, { ticker: "AAPL", pct: 6.8 }, { ticker: "META", pct: 11.1 }], monthlyReturn: 31.2, winRate: 82, tradeCount: 38, streak: 31, history: [18, 22, 27, 31] },
-  { id: "t2", handle: "@alphatrader", trades: [{ ticker: "SPY", pct: 9.1 }, { ticker: "TSLA", pct: 22.4 }, { ticker: "AMD", pct: 7.3 }], monthlyReturn: 28.7, winRate: 79, tradeCount: 44, streak: 22, history: [12, 19, 24, 28] },
-  { id: "t3", handle: "@mktwizard", trades: [{ ticker: "MSFT", pct: 8.4 }, { ticker: "GOOGL", pct: 5.9 }], monthlyReturn: 19.4, winRate: 74, tradeCount: 29, streak: 14, history: [8, 11, 16, 19] },
-  { id: "t4", handle: "@qdtrader", trades: [{ ticker: "AMZN", pct: 7.2 }, { ticker: "NFLX", pct: -3.1 }], monthlyReturn: 14.1, winRate: 68, tradeCount: 21, streak: 7, history: [5, 9, 11, 14] },
-  { id: "t5", handle: "@riskoff_rex", trades: [{ ticker: "QQQ", pct: 4.8 }], monthlyReturn: 9.3, winRate: 61, tradeCount: 15, streak: 3, history: [3, 5, 7, 9] },
-];
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const now = new Date();
 const CURRENT_MONTH = MONTHS[now.getMonth()] + " " + now.getFullYear();
 
 function MiniChart({ data }) {
+  if (!data || data.length < 2) return null;
   const max = Math.max(...data);
   const min = Math.min(...data);
   const range = max - min || 1;
@@ -54,65 +52,91 @@ function MiniChart({ data }) {
 
 export default function Sharpe() {
   const [view, setView] = useState("landing");
-  const [traders, setTraders] = useState(DEMO_TRADERS);
+  const [traders, setTraders] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [joinForm, setJoinForm] = useState({ handle: "", monthlyReturn: "", winRate: "", tradeCount: "", ticker: "", tradePct: "" });
   const [updateForm, setUpdateForm] = useState({ monthlyReturn: "", winRate: "", tradeCount: "", ticker: "", tradePct: "" });
   const [toast, setToast] = useState(null);
   const [selectedTrader, setSelectedTrader] = useState(null);
 
-  const sorted = [...traders].sort((a, b) =>
-    calcSharpeScore(b.monthlyReturn, b.winRate, b.tradeCount) - calcSharpeScore(a.monthlyReturn, a.winRate, a.tradeCount)
-  );
+  useEffect(() => { fetchTraders(); }, []);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("sharpe_handle");
+    if (saved) fetchCurrentUser(saved);
+  }, []);
+
+  async function fetchTraders() {
+    setLoading(true);
+    const { data } = await supabase.from("traders").select("*").order("monthly_return", { ascending: false });
+    if (data) setTraders(data);
+    setLoading(false);
+  }
+
+  async function fetchCurrentUser(handle) {
+    const { data } = await supabase.from("traders").select("*").eq("handle", handle).single();
+    if (data) { setCurrentUser(data); setView("dashboard"); }
+  }
 
   function showToast(msg) {
     setToast(msg);
     setTimeout(() => setToast(null), 2800);
   }
 
-  function handleJoin() {
+  async function handleJoin() {
     if (!joinForm.handle || joinForm.monthlyReturn === "" || joinForm.winRate === "" || joinForm.tradeCount === "") {
-      showToast("Please fill in all fields");
-      return;
+      showToast("Please fill in all fields"); return;
     }
-    const newUser = {
-      id: "me",
-      handle: joinForm.handle.startsWith("@") ? joinForm.handle : "@" + joinForm.handle,
-      trades: joinForm.ticker ? [{ ticker: joinForm.ticker.toUpperCase(), pct: parseFloat(joinForm.tradePct) || 0 }] : [],
-      monthlyReturn: parseFloat(joinForm.monthlyReturn),
-      winRate: parseFloat(joinForm.winRate),
-      tradeCount: parseInt(joinForm.tradeCount),
+    const handle = joinForm.handle.startsWith("@") ? joinForm.handle : "@" + joinForm.handle;
+    const trades = joinForm.ticker ? [{ ticker: joinForm.ticker.toUpperCase(), pct: parseFloat(joinForm.tradePct) || 0 }] : [];
+    const { data, error } = await supabase.from("traders").upsert({
+      handle,
+      monthly_return: parseFloat(joinForm.monthlyReturn),
+      win_rate: parseFloat(joinForm.winRate),
+      trade_count: parseInt(joinForm.tradeCount),
       streak: 1,
       history: [parseFloat(joinForm.monthlyReturn)],
-    };
-    setTraders(prev => [...prev.filter(t => t.id !== "me"), newUser]);
-    setCurrentUser(newUser);
+      trades,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "handle" }).select().single();
+    if (error) { showToast("Error saving. Try again."); return; }
+    localStorage.setItem("sharpe_handle", handle);
+    setCurrentUser(data);
+    await fetchTraders();
     setView("dashboard");
     showToast("Welcome to Sharpe.");
   }
 
-  function handleUpdate() {
+  async function handleUpdate() {
     if (!currentUser) return;
-    const updated = {
-      ...currentUser,
-      monthlyReturn: updateForm.monthlyReturn !== "" ? parseFloat(updateForm.monthlyReturn) : currentUser.monthlyReturn,
-      winRate: updateForm.winRate !== "" ? parseFloat(updateForm.winRate) : currentUser.winRate,
-      tradeCount: updateForm.tradeCount !== "" ? parseInt(updateForm.tradeCount) : currentUser.tradeCount,
-      streak: currentUser.streak + 1,
-      trades: updateForm.ticker
-        ? [{ ticker: updateForm.ticker.toUpperCase(), pct: parseFloat(updateForm.tradePct) || 0 }, ...currentUser.trades].slice(0, 5)
-        : currentUser.trades,
-    };
-    setTraders(prev => prev.map(t => t.id === "me" ? updated : t));
-    setCurrentUser(updated);
+    const newReturn = updateForm.monthlyReturn !== "" ? parseFloat(updateForm.monthlyReturn) : currentUser.monthly_return;
+    const newWinRate = updateForm.winRate !== "" ? parseFloat(updateForm.winRate) : currentUser.win_rate;
+    const newTradeCount = updateForm.tradeCount !== "" ? parseInt(updateForm.tradeCount) : currentUser.trade_count;
+    const newTrades = updateForm.ticker
+      ? [{ ticker: updateForm.ticker.toUpperCase(), pct: parseFloat(updateForm.tradePct) || 0 }, ...(currentUser.trades || [])].slice(0, 5)
+      : currentUser.trades;
+    const { data, error } = await supabase.from("traders").update({
+      monthly_return: newReturn,
+      win_rate: newWinRate,
+      trade_count: newTradeCount,
+      streak: (currentUser.streak || 0) + 1,
+      trades: newTrades,
+      updated_at: new Date().toISOString(),
+    }).eq("handle", currentUser.handle).select().single();
+    if (error) { showToast("Error updating. Try again."); return; }
+    setCurrentUser(data);
+    await fetchTraders();
     setUpdateForm({ monthlyReturn: "", winRate: "", tradeCount: "", ticker: "", tradePct: "" });
     setView("dashboard");
     showToast("Stats updated. Leaderboard refreshed.");
   }
 
-  const myRank = currentUser ? sorted.findIndex(t => t.id === "me") + 1 : null;
-  const myScore = currentUser ? calcSharpeScore(currentUser.monthlyReturn, currentUser.winRate, currentUser.tradeCount) : null;
-  const myBadge = currentUser ? getBadge(myScore) : null;
+  const sorted = [...traders].sort((a, b) =>
+    calcSharpeScore(b.monthly_return, b.win_rate, b.trade_count) - calcSharpeScore(a.monthly_return, a.win_rate, a.trade_count)
+  );
+  const myRank = currentUser ? sorted.findIndex(t => t.handle === currentUser.handle) + 1 : null;
+  const myScore = currentUser ? calcSharpeScore(currentUser.monthly_return, currentUser.win_rate, currentUser.trade_count) : null;
 
   if (view === "landing") return (
     <div style={s.page}>
@@ -130,7 +154,7 @@ export default function Sharpe() {
           <button style={s.btnGhost} onClick={() => setView("leaderboard")}>View Leaderboard →</button>
         </div>
         <div style={s.heroStats}>
-          <div style={s.heroStat}><span style={s.heroStatN}>{traders.length}</span><span style={s.heroStatL}>Traders</span></div>
+          <div style={s.heroStat}><span style={s.heroStatN}>{traders.length || 0}</span><span style={s.heroStatL}>Traders</span></div>
           <div style={s.heroStatDiv} />
           <div style={s.heroStat}><span style={s.heroStatN}>Daily</span><span style={s.heroStatL}>Updates</span></div>
           <div style={s.heroStatDiv} />
@@ -220,7 +244,7 @@ export default function Sharpe() {
   );
 
   if (view === "dashboard" && currentUser) {
-    const score = calcSharpeScore(currentUser.monthlyReturn, currentUser.winRate, currentUser.tradeCount);
+    const score = calcSharpeScore(currentUser.monthly_return, currentUser.win_rate, currentUser.trade_count);
     const badge = getBadge(score);
     return (
       <div style={s.page}>
@@ -245,9 +269,9 @@ export default function Sharpe() {
               </div>
             </div>
             <div style={s.profileStats}>
-              <div style={s.pStat}><span style={s.pStatN}>{currentUser.monthlyReturn > 0 ? "+" : ""}{currentUser.monthlyReturn}%</span><span style={s.pStatL}>Return</span></div>
-              <div style={s.pStat}><span style={s.pStatN}>{currentUser.winRate}%</span><span style={s.pStatL}>Win Rate</span></div>
-              <div style={s.pStat}><span style={s.pStatN}>{currentUser.tradeCount}</span><span style={s.pStatL}>Trades</span></div>
+              <div style={s.pStat}><span style={s.pStatN}>{currentUser.monthly_return > 0 ? "+" : ""}{currentUser.monthly_return}%</span><span style={s.pStatL}>Return</span></div>
+              <div style={s.pStat}><span style={s.pStatN}>{currentUser.win_rate}%</span><span style={s.pStatL}>Win Rate</span></div>
+              <div style={s.pStat}><span style={s.pStatN}>{currentUser.trade_count}</span><span style={s.pStatL}>Trades</span></div>
               <div style={s.pStat}><span style={s.pStatN}>🔥 {currentUser.streak}</span><span style={s.pStatL}>Day Streak</span></div>
             </div>
             <div style={s.rankLine}>
@@ -255,7 +279,7 @@ export default function Sharpe() {
               <span style={{ color: "#C8A96E", fontWeight: 700, fontSize: 18 }}>#{myRank} of {traders.length}</span>
             </div>
           </div>
-          {currentUser.trades.length > 0 && (
+          {currentUser.trades && currentUser.trades.length > 0 && (
             <div style={s.card}>
               <div style={s.cardLabel}>BEST TRADES THIS MONTH</div>
               {currentUser.trades.map((t, i) => (
@@ -266,15 +290,10 @@ export default function Sharpe() {
               ))}
             </div>
           )}
-          {currentUser.history.length > 1 && (
+          {currentUser.history && currentUser.history.length > 1 && (
             <div style={s.card}>
               <div style={s.cardLabel}>MONTHLY RETURN HISTORY</div>
               <MiniChart data={currentUser.history} />
-              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                {currentUser.history.map((v, i) => (
-                  <span key={i} style={{ fontSize: 12, color: "#888" }}>{MONTHS[now.getMonth() - currentUser.history.length + 1 + i] || "–"}: <span style={{ color: "#C8A96E" }}>{v > 0 ? "+" : ""}{v}%</span></span>
-                ))}
-              </div>
             </div>
           )}
           <button style={s.btnPrimary} onClick={() => setView("update")}>Update Today's Stats →</button>
@@ -299,16 +318,16 @@ export default function Sharpe() {
           <div style={s.fieldRow}>
             <div style={s.fieldGroup}>
               <label style={s.label}>Monthly Return % (MTD)</label>
-              <input style={s.input} type="number" placeholder={currentUser?.monthlyReturn} value={updateForm.monthlyReturn} onChange={e => setUpdateForm({ ...updateForm, monthlyReturn: e.target.value })} />
+              <input style={s.input} type="number" placeholder={currentUser?.monthly_return} value={updateForm.monthlyReturn} onChange={e => setUpdateForm({ ...updateForm, monthlyReturn: e.target.value })} />
             </div>
             <div style={s.fieldGroup}>
               <label style={s.label}>Win Rate %</label>
-              <input style={s.input} type="number" placeholder={currentUser?.winRate} value={updateForm.winRate} onChange={e => setUpdateForm({ ...updateForm, winRate: e.target.value })} />
+              <input style={s.input} type="number" placeholder={currentUser?.win_rate} value={updateForm.winRate} onChange={e => setUpdateForm({ ...updateForm, winRate: e.target.value })} />
             </div>
           </div>
           <div style={s.fieldGroup}>
             <label style={s.label}>Total Trades This Month</label>
-            <input style={s.input} type="number" placeholder={currentUser?.tradeCount} value={updateForm.tradeCount} onChange={e => setUpdateForm({ ...updateForm, tradeCount: e.target.value })} />
+            <input style={s.input} type="number" placeholder={currentUser?.trade_count} value={updateForm.tradeCount} onChange={e => setUpdateForm({ ...updateForm, tradeCount: e.target.value })} />
           </div>
           <div style={s.divider} />
           <div style={{ ...s.formEyebrow, marginBottom: 12 }}>ADD A TRADE (OPTIONAL)</div>
@@ -352,12 +371,13 @@ export default function Sharpe() {
             <span style={{ color: "#C8A96E", fontWeight: 700 }}>#{myRank} — Score {myScore}</span>
           </div>
         )}
+        {loading && <div style={{ textAlign: "center", color: "#666680", padding: 40 }}>Loading leaderboard...</div>}
         <div style={s.lbList}>
           {sorted.map((trader, i) => {
-            const score = calcSharpeScore(trader.monthlyReturn, trader.winRate, trader.tradeCount);
+            const score = calcSharpeScore(trader.monthly_return, trader.win_rate, trader.trade_count);
             const badge = getBadge(score);
-            const isMe = trader.id === "me";
-            const bestTrade = trader.trades[0];
+            const isMe = currentUser && trader.handle === currentUser.handle;
+            const bestTrade = trader.trades && trader.trades[0];
             return (
               <div key={trader.id} style={{ ...s.lbRow, ...(isMe ? s.lbRowMe : {}), ...(selectedTrader === trader.id ? s.lbRowOpen : {}) }}
                 onClick={() => setSelectedTrader(selectedTrader === trader.id ? null : trader.id)}>
@@ -371,24 +391,24 @@ export default function Sharpe() {
                       <span style={{ ...s.badge, color: badge.color, background: badge.bg, fontSize: 10 }}>{badge.label}</span>
                     </div>
                     <div style={s.lbMeta}>
-                      <span>{trader.winRate}% WR</span>
+                      <span>{trader.win_rate}% WR</span>
                       <span>·</span>
-                      <span>{trader.tradeCount} trades</span>
+                      <span>{trader.trade_count} trades</span>
                       <span>·</span>
                       <span>🔥 {trader.streak}d</span>
                     </div>
                   </div>
                 </div>
                 <div style={s.lbRight}>
-                  <div style={s.lbReturn}>{trader.monthlyReturn > 0 ? "+" : ""}{trader.monthlyReturn}%</div>
+                  <div style={s.lbReturn}>{trader.monthly_return > 0 ? "+" : ""}{trader.monthly_return}%</div>
                   <div style={s.lbScore}>{score} pts</div>
                 </div>
                 {selectedTrader === trader.id && (
                   <div style={s.lbExpand}>
                     <div style={s.expandGrid}>
-                      <div style={s.expandStat}><span style={s.expandN}>{trader.monthlyReturn > 0 ? "+" : ""}{trader.monthlyReturn}%</span><span style={s.expandL}>MTD Return</span></div>
-                      <div style={s.expandStat}><span style={s.expandN}>{trader.winRate}%</span><span style={s.expandL}>Win Rate</span></div>
-                      <div style={s.expandStat}><span style={s.expandN}>{trader.tradeCount}</span><span style={s.expandL}>Trades</span></div>
+                      <div style={s.expandStat}><span style={s.expandN}>{trader.monthly_return > 0 ? "+" : ""}{trader.monthly_return}%</span><span style={s.expandL}>MTD Return</span></div>
+                      <div style={s.expandStat}><span style={s.expandN}>{trader.win_rate}%</span><span style={s.expandL}>Win Rate</span></div>
+                      <div style={s.expandStat}><span style={s.expandN}>{trader.trade_count}</span><span style={s.expandL}>Trades</span></div>
                       <div style={s.expandStat}><span style={s.expandN}>{score}</span><span style={s.expandL}>Sharpe Score</span></div>
                     </div>
                     {bestTrade && (
@@ -397,7 +417,7 @@ export default function Sharpe() {
                         <span style={{ color: bestTrade.pct >= 0 ? "#6FCF97" : "#EB5757", fontWeight: 600, marginLeft: 6 }}>{bestTrade.pct >= 0 ? "+" : ""}{bestTrade.pct}%</span>
                       </div>
                     )}
-                    {trader.history.length > 1 && <MiniChart data={trader.history} />}
+                    {trader.history && trader.history.length > 1 && <MiniChart data={trader.history} />}
                   </div>
                 )}
               </div>
