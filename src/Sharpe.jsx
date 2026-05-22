@@ -6,14 +6,16 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
-function calcSharpeScore(returnPct, winRate, tradeCount) {
+function calcSharpeScore(returnPct, winRate, tradeCount, maxDrawdown) {
   const r = Math.min(Math.max(returnPct, -100), 300);
   const w = Math.min(Math.max(winRate, 0), 100);
   const t = Math.min(tradeCount, 100);
-  const rScore = ((r + 100) / 400) * 40;
-  const wScore = (w / 100) * 40;
-  const tScore = (Math.log1p(t) / Math.log1p(100)) * 20;
-  return Math.round(rScore + wScore + tScore);
+  const d = Math.min(Math.max(maxDrawdown || 0, 0), 100);
+  const rScore = ((r + 100) / 400) * 35;
+  const wScore = (w / 100) * 35;
+  const tScore = (Math.log1p(t) / Math.log1p(100)) * 15;
+  const dScore = ((100 - d) / 100) * 15;
+  return Math.round(rScore + wScore + tScore + dScore);
 }
 
 function getBadge(score) {
@@ -50,13 +52,42 @@ function MiniChart({ data }) {
   );
 }
 
+const ScoreBreakdown = ({ returnPct, winRate, tradeCount, maxDrawdown }) => {
+  const score = calcSharpeScore(returnPct, winRate, tradeCount, maxDrawdown);
+  return (
+    <div style={s.scoreCard}>
+      <div style={s.cardLabel}>HOW YOUR SCORE IS CALCULATED</div>
+      <div style={s.scoreRows}>
+        {[
+          { label: "Monthly Return %", weight: "35%", value: returnPct !== undefined ? `${returnPct > 0 ? "+" : ""}${returnPct}%` : "—" },
+          { label: "Win Rate %", weight: "35%", value: winRate !== undefined ? `${winRate}%` : "—" },
+          { label: "Trade Volume", weight: "15%", value: tradeCount !== undefined ? `${tradeCount} trades` : "—" },
+          { label: "Max Drawdown (lower = better)", weight: "15%", value: maxDrawdown !== undefined ? `-${maxDrawdown}%` : "—" },
+        ].map((row, i) => (
+          <div key={i} style={s.scoreRow}>
+            <div style={{ flex: 1 }}>
+              <span style={s.scoreRowLabel}>{row.label}</span>
+              {row.value !== "—" && <span style={s.scoreRowVal}>{row.value}</span>}
+            </div>
+            <span style={s.scoreRowWeight}>{row.weight}</span>
+          </div>
+        ))}
+      </div>
+      <div style={s.scoreTotalRow}>
+        <span style={{ color: "#888", fontSize: 13 }}>Your Sharpe Score</span>
+        <span style={{ color: "#C8A96E", fontWeight: 900, fontSize: 22 }}>{score}</span>
+      </div>
+    </div>
+  );
+};
+
 export default function Sharpe() {
   const [view, setView] = useState("landing");
   const [traders, setTraders] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [joinForm, setJoinForm] = useState({ handle: "", monthlyReturn: "", winRate: "", tradeCount: "", ticker: "", tradePct: "" });
-  const [updateForm, setUpdateForm] = useState({ monthlyReturn: "", winRate: "", tradeCount: "", ticker: "", tradePct: "" });
+  const [joinForm, setJoinForm] = useState({ handle: "", monthlyReturn: "", winRate: "", tradeCount: "", maxDrawdown: "", ticker: "", tradePct: "" });
+  const [updateForm, setUpdateForm] = useState({ monthlyReturn: "", winRate: "", tradeCount: "", maxDrawdown: "", ticker: "", tradePct: "" });
   const [toast, setToast] = useState(null);
   const [selectedTrader, setSelectedTrader] = useState(null);
 
@@ -95,6 +126,7 @@ export default function Sharpe() {
       monthly_return: parseFloat(joinForm.monthlyReturn),
       win_rate: parseFloat(joinForm.winRate),
       trade_count: parseInt(joinForm.tradeCount),
+      max_drawdown: parseFloat(joinForm.maxDrawdown) || 0,
       streak: 1,
       history: [parseFloat(joinForm.monthlyReturn)],
       trades,
@@ -113,6 +145,7 @@ export default function Sharpe() {
     const newReturn = updateForm.monthlyReturn !== "" ? parseFloat(updateForm.monthlyReturn) : currentUser.monthly_return;
     const newWinRate = updateForm.winRate !== "" ? parseFloat(updateForm.winRate) : currentUser.win_rate;
     const newTradeCount = updateForm.tradeCount !== "" ? parseInt(updateForm.tradeCount) : currentUser.trade_count;
+    const newDrawdown = updateForm.maxDrawdown !== "" ? parseFloat(updateForm.maxDrawdown) : currentUser.max_drawdown;
     const newTrades = updateForm.ticker
       ? [{ ticker: updateForm.ticker.toUpperCase(), pct: parseFloat(updateForm.tradePct) || 0 }, ...(currentUser.trades || [])].slice(0, 5)
       : currentUser.trades;
@@ -120,6 +153,7 @@ export default function Sharpe() {
       monthly_return: newReturn,
       win_rate: newWinRate,
       trade_count: newTradeCount,
+      max_drawdown: newDrawdown,
       streak: (currentUser.streak || 0) + 1,
       trades: newTrades,
       updated_at: new Date().toISOString(),
@@ -127,16 +161,17 @@ export default function Sharpe() {
     if (error) { showToast("Error updating. Try again."); return; }
     setCurrentUser(data);
     await fetchTraders();
-    setUpdateForm({ monthlyReturn: "", winRate: "", tradeCount: "", ticker: "", tradePct: "" });
+    setUpdateForm({ monthlyReturn: "", winRate: "", tradeCount: "", maxDrawdown: "", ticker: "", tradePct: "" });
     setView("dashboard");
     showToast("Stats updated. Leaderboard refreshed.");
   }
 
   const sorted = [...traders].sort((a, b) =>
-    calcSharpeScore(b.monthly_return, b.win_rate, b.trade_count) - calcSharpeScore(a.monthly_return, a.win_rate, a.trade_count)
+    calcSharpeScore(b.monthly_return, b.win_rate, b.trade_count, b.max_drawdown) -
+    calcSharpeScore(a.monthly_return, a.win_rate, a.trade_count, a.max_drawdown)
   );
   const myRank = currentUser ? sorted.findIndex(t => t.handle === currentUser.handle) + 1 : null;
-  const myScore = currentUser ? calcSharpeScore(currentUser.monthly_return, currentUser.win_rate, currentUser.trade_count) : null;
+  const myScore = currentUser ? calcSharpeScore(currentUser.monthly_return, currentUser.win_rate, currentUser.trade_count, currentUser.max_drawdown) : null;
 
   if (view === "landing") return (
     <div style={s.page}>
@@ -166,8 +201,8 @@ export default function Sharpe() {
         <div style={s.steps}>
           {[
             { n: "01", t: "Join", d: "Subscribe for $5/month. Set up your trader profile with your X handle." },
-            { n: "02", t: "Submit Daily", d: "Log your running monthly return %, win rate, trade count, and best trade ticker." },
-            { n: "03", t: "Compete", d: "Your Sharpe Score is calculated from return, consistency, and volume. Leaderboard updates live." },
+            { n: "02", t: "Submit Daily", d: "Log your running monthly return %, win rate, drawdown, and best trade ticker." },
+            { n: "03", t: "Compete", d: "Your Sharpe Score updates live. See where you rank against every trader on the board." },
           ].map(step => (
             <div key={step.n} style={s.step}>
               <div style={s.stepN}>{step.n}</div>
@@ -180,11 +215,12 @@ export default function Sharpe() {
       <div style={{ ...s.section, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={s.sectionLabel}>THE SHARPE SCORE</div>
         <div style={s.scoreBreakdown}>
-          <div style={s.scoreItem}><span style={s.scoreWeight}>40%</span><span style={s.scoreLabel}>Monthly Return %</span></div>
-          <div style={s.scoreItem}><span style={s.scoreWeight}>40%</span><span style={s.scoreLabel}>Win Rate %</span></div>
-          <div style={s.scoreItem}><span style={s.scoreWeight}>20%</span><span style={s.scoreLabel}>Trade Volume</span></div>
+          <div style={s.scoreItem}><span style={s.scoreWeight}>35%</span><span style={s.scoreLabel}>Monthly Return %</span></div>
+          <div style={s.scoreItem}><span style={s.scoreWeight}>35%</span><span style={s.scoreLabel}>Win Rate %</span></div>
+          <div style={s.scoreItem}><span style={s.scoreWeight}>15%</span><span style={s.scoreLabel}>Trade Volume</span></div>
+          <div style={s.scoreItem}><span style={s.scoreWeight}>15%</span><span style={s.scoreLabel}>Max Drawdown</span></div>
         </div>
-        <p style={s.scoreSub}>One lucky trade won't put you at the top. Sharpe rewards consistent, disciplined traders.</p>
+        <p style={s.scoreSub}>One lucky trade won't put you at the top. Sharpe rewards consistent, disciplined traders with controlled risk.</p>
       </div>
       <div style={s.footer}>
         <span style={s.logo}>SHARPE</span>
@@ -219,9 +255,15 @@ export default function Sharpe() {
               <input style={s.input} type="number" placeholder="e.g. 68" value={joinForm.winRate} onChange={e => setJoinForm({ ...joinForm, winRate: e.target.value })} />
             </div>
           </div>
-          <div style={s.fieldGroup}>
-            <label style={s.label}>Trades This Month</label>
-            <input style={s.input} type="number" placeholder="e.g. 22" value={joinForm.tradeCount} onChange={e => setJoinForm({ ...joinForm, tradeCount: e.target.value })} />
+          <div style={s.fieldRow}>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Trades This Month</label>
+              <input style={s.input} type="number" placeholder="e.g. 22" value={joinForm.tradeCount} onChange={e => setJoinForm({ ...joinForm, tradeCount: e.target.value })} />
+            </div>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Max Drawdown %</label>
+              <input style={s.input} type="number" placeholder="e.g. 8.5" value={joinForm.maxDrawdown} onChange={e => setJoinForm({ ...joinForm, maxDrawdown: e.target.value })} />
+            </div>
           </div>
           <div style={s.divider} />
           <div style={{ ...s.formEyebrow, marginBottom: 12 }}>BEST TRADE THIS MONTH (OPTIONAL)</div>
@@ -244,7 +286,7 @@ export default function Sharpe() {
   );
 
   if (view === "dashboard" && currentUser) {
-    const score = calcSharpeScore(currentUser.monthly_return, currentUser.win_rate, currentUser.trade_count);
+    const score = calcSharpeScore(currentUser.monthly_return, currentUser.win_rate, currentUser.trade_count, currentUser.max_drawdown);
     const badge = getBadge(score);
     return (
       <div style={s.page}>
@@ -260,7 +302,7 @@ export default function Sharpe() {
           <div style={s.profileCard}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
-                <div style={s.profileHandle}>{currentUser.handle}</div>
+                <a href={`https://x.com/${currentUser.handle.replace("@", "")}`} target="_blank" rel="noopener noreferrer" style={{ ...s.profileHandle, textDecoration: "none", color: "#E8E8F0" }}>{currentUser.handle} <span style={{ fontSize: 13, color: "#C8A96E" }}>↗</span></a>
                 <div style={{ ...s.badge, color: badge.color, background: badge.bg }}>{badge.label}</div>
               </div>
               <div style={s.bigScore}>
@@ -274,6 +316,9 @@ export default function Sharpe() {
               <div style={s.pStat}><span style={s.pStatN}>{currentUser.trade_count}</span><span style={s.pStatL}>Trades</span></div>
               <div style={s.pStat}><span style={s.pStatN}>🔥 {currentUser.streak}</span><span style={s.pStatL}>Day Streak</span></div>
             </div>
+            {currentUser.max_drawdown > 0 && (
+              <div style={{ fontSize: 13, color: "#888", marginBottom: 12 }}>Max Drawdown: <span style={{ color: "#EB5757" }}>-{currentUser.max_drawdown}%</span></div>
+            )}
             <div style={s.rankLine}>
               <span style={{ color: "#888", fontSize: 13 }}>Your rank</span>
               <span style={{ color: "#C8A96E", fontWeight: 700, fontSize: 18 }}>#{myRank} of {traders.length}</span>
@@ -296,7 +341,8 @@ export default function Sharpe() {
               <MiniChart data={currentUser.history} />
             </div>
           )}
-          <button style={s.btnPrimary} onClick={() => setView("update")}>Update Today's Stats →</button>
+          <ScoreBreakdown returnPct={currentUser.monthly_return} winRate={currentUser.win_rate} tradeCount={currentUser.trade_count} maxDrawdown={currentUser.max_drawdown} />
+          <button style={{ ...s.btnPrimary, marginTop: 12 }} onClick={() => setView("update")}>Update Today's Stats →</button>
         </div>
         {toast && <div style={s.toast}>{toast}</div>}
       </div>
@@ -315,6 +361,14 @@ export default function Sharpe() {
           <div style={s.formEyebrow}>DAILY UPDATE</div>
           <h2 style={s.formTitle}>Update your stats</h2>
           <p style={s.formSub}>Update your running month-to-date numbers. Leaderboard refreshes instantly.</p>
+          <div style={s.infoBox}>
+            <div style={s.infoTitle}>📋 HOW TO UPDATE YOUR STATS</div>
+            <div style={s.infoItem}><span style={s.infoLabel}>Monthly Return %</span> — Your total % gain or loss from the 1st of this month to today. Update this every trading day.</div>
+            <div style={s.infoItem}><span style={s.infoLabel}>Win Rate %</span> — Divide your winning trades by total trades this month × 100. e.g. 14 wins out of 20 trades = 70%.</div>
+            <div style={s.infoItem}><span style={s.infoLabel}>Total Trades</span> — Total number of trades you've closed this month.</div>
+            <div style={s.infoItem}><span style={s.infoLabel}>Max Drawdown %</span> — Your biggest peak-to-trough loss this month. e.g. if your account dropped 8% from its high before recovering, enter 8.</div>
+            <div style={s.infoItem}><span style={s.infoLabel}>Best Trade</span> — Optional. Add your best ticker and % gain to show on your profile.</div>
+          </div>
           <div style={s.fieldRow}>
             <div style={s.fieldGroup}>
               <label style={s.label}>Monthly Return % (MTD)</label>
@@ -325,9 +379,15 @@ export default function Sharpe() {
               <input style={s.input} type="number" placeholder={currentUser?.win_rate} value={updateForm.winRate} onChange={e => setUpdateForm({ ...updateForm, winRate: e.target.value })} />
             </div>
           </div>
-          <div style={s.fieldGroup}>
-            <label style={s.label}>Total Trades This Month</label>
-            <input style={s.input} type="number" placeholder={currentUser?.trade_count} value={updateForm.tradeCount} onChange={e => setUpdateForm({ ...updateForm, tradeCount: e.target.value })} />
+          <div style={s.fieldRow}>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Total Trades This Month</label>
+              <input style={s.input} type="number" placeholder={currentUser?.trade_count} value={updateForm.tradeCount} onChange={e => setUpdateForm({ ...updateForm, tradeCount: e.target.value })} />
+            </div>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Max Drawdown %</label>
+              <input style={s.input} type="number" placeholder={currentUser?.max_drawdown} value={updateForm.maxDrawdown} onChange={e => setUpdateForm({ ...updateForm, maxDrawdown: e.target.value })} />
+            </div>
           </div>
           <div style={s.divider} />
           <div style={{ ...s.formEyebrow, marginBottom: 12 }}>ADD A TRADE (OPTIONAL)</div>
@@ -363,7 +423,7 @@ export default function Sharpe() {
         <div style={s.lbHeader}>
           <div style={s.formEyebrow}>{CURRENT_MONTH}</div>
           <h2 style={s.formTitle}>Leaderboard</h2>
-          <p style={s.formSub}>Ranked by Sharpe Score — return, win rate, and consistency combined.</p>
+          <p style={s.formSub}>Ranked by Sharpe Score — return, win rate, consistency, and risk combined.</p>
         </div>
         {myRank && (
           <div style={s.myRankBar}>
@@ -374,20 +434,25 @@ export default function Sharpe() {
         {loading && <div style={{ textAlign: "center", color: "#666680", padding: 40 }}>Loading leaderboard...</div>}
         <div style={s.lbList}>
           {sorted.map((trader, i) => {
-            const score = calcSharpeScore(trader.monthly_return, trader.win_rate, trader.trade_count);
+            const score = calcSharpeScore(trader.monthly_return, trader.win_rate, trader.trade_count, trader.max_drawdown);
             const badge = getBadge(score);
             const isMe = currentUser && trader.handle === currentUser.handle;
             const bestTrade = trader.trades && trader.trades[0];
             return (
-              <div key={trader.id} style={{ ...s.lbRow, ...(isMe ? s.lbRowMe : {}), ...(selectedTrader === trader.id ? s.lbRowOpen : {}) }}
-                onClick={() => setSelectedTrader(selectedTrader === trader.id ? null : trader.id)}>
+              <div key={trader.handle} style={{ ...s.lbRow, ...(isMe ? s.lbRowMe : {}), ...(selectedTrader === trader.handle ? s.lbRowOpen : {}) }}
+                onClick={() => setSelectedTrader(selectedTrader === trader.handle ? null : trader.handle)}>
                 <div style={s.lbLeft}>
                   <div style={{ ...s.rank, ...(i === 0 ? s.rankGold : i === 1 ? s.rankSilver : i === 2 ? s.rankBronze : {}) }}>
                     {i === 0 ? "👑" : `#${i + 1}`}
                   </div>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={s.traderHandle}>{trader.handle}{isMe && <span style={{ color: "#C8A96E", fontSize: 11, marginLeft: 6 }}>YOU</span>}</span>
+                      <a href={`https://x.com/${trader.handle.replace("@", "")}`} target="_blank" rel="noopener noreferrer"
+                        style={{ ...s.traderHandle, textDecoration: "none", color: "#E8E8F0" }}
+                        onClick={e => e.stopPropagation()}>
+                        {trader.handle} <span style={{ fontSize: 11, color: "#C8A96E" }}>↗</span>
+                      </a>
+                      {isMe && <span style={{ color: "#C8A96E", fontSize: 11 }}>YOU</span>}
                       <span style={{ ...s.badge, color: badge.color, background: badge.bg, fontSize: 10 }}>{badge.label}</span>
                     </div>
                     <div style={s.lbMeta}>
@@ -396,6 +461,7 @@ export default function Sharpe() {
                       <span>{trader.trade_count} trades</span>
                       <span>·</span>
                       <span>🔥 {trader.streak}d</span>
+                      {trader.max_drawdown > 0 && <><span>·</span><span style={{ color: "#EB5757" }}>-{trader.max_drawdown}% DD</span></>}
                     </div>
                   </div>
                 </div>
@@ -403,13 +469,13 @@ export default function Sharpe() {
                   <div style={s.lbReturn}>{trader.monthly_return > 0 ? "+" : ""}{trader.monthly_return}%</div>
                   <div style={s.lbScore}>{score} pts</div>
                 </div>
-                {selectedTrader === trader.id && (
+                {selectedTrader === trader.handle && (
                   <div style={s.lbExpand}>
                     <div style={s.expandGrid}>
                       <div style={s.expandStat}><span style={s.expandN}>{trader.monthly_return > 0 ? "+" : ""}{trader.monthly_return}%</span><span style={s.expandL}>MTD Return</span></div>
                       <div style={s.expandStat}><span style={s.expandN}>{trader.win_rate}%</span><span style={s.expandL}>Win Rate</span></div>
                       <div style={s.expandStat}><span style={s.expandN}>{trader.trade_count}</span><span style={s.expandL}>Trades</span></div>
-                      <div style={s.expandStat}><span style={s.expandN}>{score}</span><span style={s.expandL}>Sharpe Score</span></div>
+                      <div style={s.expandStat}><span style={{ ...s.expandN, color: "#EB5757" }}>-{trader.max_drawdown}%</span><span style={s.expandL}>Max DD</span></div>
                     </div>
                     {bestTrade && (
                       <div style={s.bestTrade}>
@@ -481,14 +547,18 @@ const s = {
   label: { display: "block", fontSize: 12, color: "#888899", marginBottom: 7, fontFamily: "'DM Mono', monospace", letterSpacing: "0.05em" },
   input: { width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "11px 14px", color: "#E8E8F0", fontSize: 15, fontFamily: "inherit", outline: "none", boxSizing: "border-box" },
   divider: { height: 1, background: "rgba(255,255,255,0.07)", margin: "20px 0" },
+  infoBox: { background: "rgba(200,169,110,0.05)", border: "1px solid rgba(200,169,110,0.15)", borderRadius: 10, padding: 16, marginBottom: 20 },
+  infoTitle: { fontFamily: "'DM Mono', monospace", fontSize: 10, letterSpacing: "0.15em", color: "#C8A96E", marginBottom: 12 },
+  infoItem: { fontSize: 12, color: "#888899", lineHeight: 1.6, marginBottom: 8 },
+  infoLabel: { color: "#C8A96E", fontWeight: 700 },
   dashWrap: { maxWidth: 560, margin: "0 auto", padding: "40px 24px", position: "relative", zIndex: 1 },
   profileCard: { background: "rgba(200,169,110,0.06)", border: "1px solid rgba(200,169,110,0.2)", borderRadius: 16, padding: 28, marginBottom: 16 },
-  profileHandle: { fontSize: 22, fontWeight: 800, color: "#E8E8F0", marginBottom: 8, letterSpacing: "-0.01em" },
+  profileHandle: { fontSize: 22, fontWeight: 800, color: "#E8E8F0", marginBottom: 8, letterSpacing: "-0.01em", display: "block" },
   badge: { display: "inline-block", fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", marginBottom: 20 },
   bigScore: { textAlign: "right" },
   bigScoreN: { fontSize: 48, fontWeight: 900, color: "#C8A96E", lineHeight: 1 },
   bigScoreL: { fontSize: 10, color: "#C8A96E", letterSpacing: "0.15em", fontFamily: "'DM Mono', monospace", opacity: 0.7 },
-  profileStats: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 },
+  profileStats: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 12 },
   pStat: { display: "flex", flexDirection: "column", gap: 2 },
   pStatN: { fontSize: 16, fontWeight: 700, color: "#E8E8F0" },
   pStatL: { fontSize: 11, color: "#666680" },
@@ -497,6 +567,13 @@ const s = {
   cardLabel: { fontFamily: "'DM Mono', monospace", fontSize: 10, letterSpacing: "0.15em", color: "#666680", marginBottom: 14 },
   tradeRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" },
   tradeTicker: { fontFamily: "'DM Mono', monospace", fontSize: 13, color: "#C8A96E", fontWeight: 600 },
+  scoreCard: { background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: 20, marginBottom: 12 },
+  scoreRows: { display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 },
+  scoreRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  scoreRowLabel: { fontSize: 13, color: "#888899" },
+  scoreRowVal: { fontSize: 13, color: "#C8A96E", marginLeft: 8, fontWeight: 600 },
+  scoreRowWeight: { fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#555570", fontWeight: 700 },
+  scoreTotalRow: { display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid rgba(255,255,255,0.07)", paddingTop: 14 },
   lbWrap: { maxWidth: 680, margin: "0 auto", padding: "40px 24px", position: "relative", zIndex: 1 },
   lbHeader: { marginBottom: 32 },
   myRankBar: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "rgba(200,169,110,0.08)", border: "1px solid rgba(200,169,110,0.2)", borderRadius: 8, marginBottom: 16, fontSize: 14 },
